@@ -5,7 +5,7 @@ import Link from "next/link";
 import TabBar from "@/components/ui/TabBar";
 import { naira } from "@/components/ui/NA";
 
-export const DEFAULT_INVESTMENT_BALANCE = 428000;
+export const DEFAULT_INVESTMENT_BALANCE = 0;
 export const INVESTMENT_STORAGE_KEY = "fpmarkets:investment-state";
 
 export type HeroStat = {
