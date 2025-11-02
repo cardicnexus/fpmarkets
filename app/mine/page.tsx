@@ -2,49 +2,48 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Surface from "@/components/ui/Surface";
 import TabBar from "@/components/ui/TabBar";
-import { naira } from "@/components/ui/NA";
 import {
   DEFAULT_INVESTMENT_BALANCE,
   INVESTMENT_STORAGE_KEY,
   type ActiveInvestment,
   type StoredInvestmentState,
 } from "@/components/invest/InvestExperience";
+import {
+  PROFILE_STORAGE_KEY,
+  defaultStoredProfile,
+  parseStoredProfile,
+  type StoredProfile,
+} from "@/lib/profile-storage";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
-const defaultQuickStats = [
+type FormatCurrency = (value: number) => string;
+
+type QuickStatTemplate = {
+  label: string;
+  value: (format: FormatCurrency) => string;
+  detail: (format: FormatCurrency) => string;
+};
+
+const defaultQuickStats: QuickStatTemplate[] = [
   {
     label: "ROI today",
-    value: "+64%",
-    detail: "Credited nightly at 23:59 WAT",
+    value: () => "+64%",
+    detail: () => "Credited nightly at 23:59 WAT",
   },
   {
     label: "Earned this week",
-    value: naira(186000),
-    detail: "Auto-withdraw in 3 days",
+    value: (format) => format(186000),
+    detail: () => "Auto-withdraw in 3 days",
   },
   {
     label: "Referral bonus",
-    value: naira(42000),
-    detail: "Squad Lagos online",
+    value: (format) => format(42000),
+    detail: () => "Squad Lagos online",
   },
 ];
-
-const PROFILE_STORAGE_KEY = "fpmarkets:profile-state";
-
-type ProfileState = {
-  name: string;
-  nickname: string;
-  coopId: string;
-  photo: string | null;
-};
-
-const defaultProfile: ProfileState = {
-  name: "Sola Gbadamosi",
-  nickname: "solagbada",
-  coopId: "303659",
-  photo: null,
-};
 
 const menuItems = [
   {
@@ -151,7 +150,8 @@ const fallbackDashboardStream = [
 ];
 
 export default function Mine() {
-  const [profile, setProfile] = useState<ProfileState>(defaultProfile);
+  const router = useRouter();
+  const [profile, setProfile] = useState<StoredProfile>(defaultStoredProfile);
   const [profileHydrated, setProfileHydrated] = useState(false);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [currentBalance, setCurrentBalance] = useState(DEFAULT_INVESTMENT_BALANCE);
@@ -159,6 +159,45 @@ export default function Mine() {
   const [dashboardVisible, setDashboardVisible] = useState(false);
   const [liveEarnings, setLiveEarnings] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isActive = true;
+
+    getSupabaseBrowserClient()
+      .then((supabase) =>
+        supabase.auth.getSession().then(({ data, error }) => {
+          if (!isActive) {
+            return;
+          }
+
+          if (error || !data?.session) {
+            setAuthMessage("Your session has ended. Please sign in again to view the dashboard.");
+            router.replace("/signin");
+            return;
+          }
+
+          setAuthReady(true);
+        }),
+      )
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Authentication configuration is incomplete. Continuing in demo mode.";
+        setAuthMessage(message);
+        setAuthReady(true);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [router]);
 
   useEffect(() => {
     if (typeof window === "undefined" || profileHydrated) {
@@ -168,30 +207,17 @@ export default function Mine() {
     const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
 
     if (!raw) {
-      setProfile(defaultProfile);
+      setProfile(defaultStoredProfile);
       setProfileHydrated(true);
       return;
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<ProfileState>;
-      const name = typeof parsed?.name === "string" && parsed.name.trim()
-        ? parsed.name.trim()
-        : defaultProfile.name;
-      const nickname = typeof parsed?.nickname === "string" && parsed.nickname.trim()
-        ? parsed.nickname.trim()
-        : defaultProfile.nickname;
-      const coopId = typeof parsed?.coopId === "string" && parsed.coopId.trim()
-        ? parsed.coopId.trim()
-        : defaultProfile.coopId;
-      const photo = typeof parsed?.photo === "string" && parsed.photo.trim()
-        ? parsed.photo.trim()
-        : null;
-
-      setProfile({ name, nickname, coopId, photo });
+      const parsed = JSON.parse(raw);
+      setProfile(parseStoredProfile(parsed));
       setProfileHydrated(true);
     } catch (error) {
-      setProfile(defaultProfile);
+      setProfile(defaultStoredProfile);
       setProfileHydrated(true);
     }
   }, [profileHydrated]);
@@ -274,6 +300,30 @@ export default function Mine() {
     : 0;
   const roiProgress = roiTarget > 0 ? Math.min(liveEarnings / roiTarget, 1) : 0;
 
+  const formatCurrency = useMemo<FormatCurrency>(() => {
+    const { currencyCode, currencySymbol } = profile;
+
+    return (value: number) => {
+      const amount = Number.isFinite(value) ? value : 0;
+      const code = currencyCode || "NGN";
+      const symbol = currencySymbol || "₦";
+
+      try {
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: code,
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(amount);
+      } catch (error) {
+        return `${symbol}${amount.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+      }
+    };
+  }, [profile.currencyCode, profile.currencySymbol]);
+
   const liveTickerItems = useMemo(() => {
     if (!activeInvestment) {
       return fallbackDashboardStream;
@@ -281,14 +331,22 @@ export default function Mine() {
 
     return [
       `${activeInvestment.project.title} • ${activeInvestment.project.cycle}`,
-      `Live earnings ${naira(liveEarnings)} • ROI +${roiPercent.toFixed(2)}%`,
-      `Balance ${naira(currentBalance)} • Target ${naira(roiTarget)}`,
+      `Live earnings ${formatCurrency(liveEarnings)} • ROI +${roiPercent.toFixed(2)}%`,
+      `Balance ${formatCurrency(currentBalance)} • Target ${formatCurrency(roiTarget)}`,
     ];
-  }, [activeInvestment, currentBalance, liveEarnings, roiPercent, roiTarget]);
+  }, [activeInvestment, currentBalance, formatCurrency, liveEarnings, roiPercent, roiTarget]);
+
+  const quickStats = useMemo(() => {
+    return defaultQuickStats.map((stat) => ({
+      label: stat.label,
+      value: stat.value(formatCurrency),
+      detail: stat.detail(formatCurrency),
+    }));
+  }, [formatCurrency]);
 
   const stats = useMemo(() => {
     if (!activeInvestment) {
-      return defaultQuickStats;
+      return quickStats;
     }
 
     return [
@@ -300,17 +358,17 @@ export default function Mine() {
       {
         label: "Live ROI",
         value: `+${roiPercent.toFixed(2)}%`,
-        detail: `Earnings ${naira(liveEarnings)}`,
+        detail: `Earnings ${formatCurrency(liveEarnings)}`,
       },
       {
         label: "Capital deployed",
-        value: naira(activeInvestment.amount),
-        detail: `Balance ${naira(currentBalance)} remaining`,
+        value: formatCurrency(activeInvestment.amount),
+        detail: `Balance ${formatCurrency(currentBalance)} remaining`,
       },
     ];
-  }, [activeInvestment, currentBalance, liveEarnings, roiPercent]);
+  }, [activeInvestment, currentBalance, formatCurrency, liveEarnings, quickStats, roiPercent]);
 
-  const handleProfileSave = (next: ProfileState) => {
+  const handleProfileSave = (next: StoredProfile) => {
     setProfile(next);
     setIsEditingProfile(false);
   };
@@ -325,9 +383,32 @@ export default function Mine() {
       .toUpperCase();
   }, [profile.name]);
 
+  const showAuthNotice = Boolean(authMessage && authReady);
+
+  if (!authReady) {
+    return (
+      <main className="auth auth--status" aria-busy="true">
+        <div className="auth__halo auth__halo--left" aria-hidden />
+        <div className="auth__halo auth__halo--right" aria-hidden />
+        <div className="auth__shell">
+          <section className="auth__card" aria-live="polite">
+            <p className="auth__message" role="status">
+              {authMessage ?? "Confirming your session…"}
+            </p>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="profile-page profile-page--mobile">
       <section className="profile-mobile">
+        {showAuthNotice ? (
+          <div className="profile-mobile__auth-message" role="status">
+            {authMessage}
+          </div>
+        ) : null}
         <Surface className="profile-mobile__identity-card">
           <div className="profile-mobile__identity-glow" aria-hidden="true" />
 
@@ -376,12 +457,30 @@ export default function Mine() {
                   </button>
                 </span>
               </div>
+              <div className="profile-mobile__identity-row">
+                <span className="profile-mobile__identity-label">Location</span>
+                <span className="profile-mobile__identity-value">
+                  {profile.city}, {profile.region}, {profile.countryName}
+                </span>
+              </div>
+              <div className="profile-mobile__identity-row">
+                <span className="profile-mobile__identity-label">Currency</span>
+                <span className="profile-mobile__identity-value">
+                  {profile.currencySymbol} {profile.currencyCode}
+                </span>
+              </div>
+              <div className="profile-mobile__identity-row">
+                <span className="profile-mobile__identity-label">Phone</span>
+                <span className="profile-mobile__identity-value">
+                  {profile.dialCode} {profile.phoneNumber}
+                </span>
+              </div>
             </div>
           </div>
 
           <div className="profile-mobile__balance">
             <span>Current balance</span>
-            <strong>{naira(currentBalance)}</strong>
+            <strong>{formatCurrency(currentBalance)}</strong>
           </div>
 
           <div className="profile-mobile__actions">
@@ -508,9 +607,9 @@ export default function Mine() {
                   <div className="profile-demo__live-secondary">
                     <span>Live ROI</span>
                     <strong>+{roiPercent.toFixed(2)}%</strong>
-                    <p>Earnings {naira(liveEarnings)}</p>
+                    <p>Earnings {formatCurrency(liveEarnings)}</p>
                     <span className="profile-demo__live-meta">
-                      Target {naira(roiTarget)}
+                      Target {formatCurrency(roiTarget)}
                     </span>
                   </div>
                 </div>
@@ -518,17 +617,17 @@ export default function Mine() {
                 <div className="profile-demo__grid profile-demo__grid--live">
                   <div className="profile-demo__metric">
                     <span>Capital deployed</span>
-                    <strong>{naira(activeInvestment.amount)}</strong>
+                    <strong>{formatCurrency(activeInvestment.amount)}</strong>
                     <p>Charged from wallet balance</p>
                   </div>
                   <div className="profile-demo__metric">
                     <span>Balance remaining</span>
-                    <strong>{naira(currentBalance)}</strong>
+                    <strong>{formatCurrency(currentBalance)}</strong>
                     <p>Withdrawals stay open</p>
                   </div>
                   <div className="profile-demo__metric">
                     <span>Live earnings</span>
-                    <strong>{naira(liveEarnings)}</strong>
+                    <strong>{formatCurrency(liveEarnings)}</strong>
                     <p>{roiPercent.toFixed(2)}% of daily target</p>
                   </div>
                   <div className="profile-demo__metric">
@@ -542,12 +641,12 @@ export default function Mine() {
                   <div className="profile-demo__project-brief">
                     <div>
                       <span>Charges applied</span>
-                      <strong>{naira(activeInvestment.amount)}</strong>
+                      <strong>{formatCurrency(activeInvestment.amount)}</strong>
                       <p>Next review in {elapsedLabel}</p>
                     </div>
                     <div className="profile-demo__project-chip">
                       <span>Daily target</span>
-                      <strong>{naira(roiTarget)}</strong>
+                      <strong>{formatCurrency(roiTarget)}</strong>
                       <p>69% ROI objective</p>
                     </div>
                   </div>
@@ -623,9 +722,9 @@ export default function Mine() {
 }
 
 type ProfileEditDialogProps = {
-  initialProfile: ProfileState;
+  initialProfile: StoredProfile;
   onClose: () => void;
-  onSave: (profile: ProfileState) => void;
+  onSave: (profile: StoredProfile) => void;
 };
 
 function ProfileEditDialog({ initialProfile, onClose, onSave }: ProfileEditDialogProps) {
