@@ -73,6 +73,7 @@ const featureCards: FeatureCard[] = [
 
 const navItems: NavItem[] = [
   { label: "Home", href: "/", icon: "🏠" },
+  { label: "Admin", href: "/admin", icon: "🛡️" },
   { label: "FAQs", href: "#faqs", icon: "❓" },
   { label: "Staff", href: "#staff", icon: "👥" },
   { label: "Plans", href: "#plans", icon: "🧭" },
