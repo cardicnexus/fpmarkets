@@ -1,8 +1,8 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getSupabaseBrowserClient, type SupabaseClient } from "@/lib/supabase/client";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 import Link from "next/link";
 import Image from "next/image";
 
@@ -28,7 +28,7 @@ interface DropdownState {
 
 export default function MinePage() {
   const router = useRouter();
-  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
+  const supabase = createClientComponentClient();
   const [user, setUser] = useState<UserProfile | null>(null);
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,76 +39,42 @@ export default function MinePage() {
   });
   const [logoutLoading, setLogoutLoading] = useState(false);
 
-  // Initialize Supabase client
-  useEffect(() => {
-    let isMounted = true;
-
-    getSupabaseBrowserClient()
-      .then((client) => {
-        if (!isMounted) return;
-        setSupabase(client);
-      })
-      .catch((error) => {
-        console.error("Failed to initialize Supabase:", error);
-        if (isMounted) {
-          router.push("/signin");
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [router]);
-
   // Fetch user and investments
   useEffect(() => {
-    if (!supabase) return;
+    let mounted = true;
 
     const fetchData = async () => {
       try {
-        // Get current user session
-        const { data: authData, error: authError } = await (supabase.auth as any).getSession?.() || 
-          await (supabase.auth as any).getUser?.();
-
-        if (authError || !authData) {
-          router.push("/signin");
-          return;
-        }
-
-        // For our custom client, we need to handle the user data differently
-        // Fetch user from session or auth state
-        const userEmail = (authData as any)?.user?.email || 
-                         (authData as any)?.session?.user?.email ||
-                         (authData as any)?.email;
-
-        if (!userEmail) {
+        const { data } = await supabase.auth.getUser();
+        const currentUser = (data as any)?.user ?? null;
+        if (!currentUser) {
           router.push("/signin");
           return;
         }
 
         const userProfile: UserProfile = {
-          id: (authData as any)?.user?.id || (authData as any)?.session?.user?.id || "unknown",
-          email: userEmail,
-          full_name: (authData as any)?.user?.user_metadata?.full_name || userEmail.split("@")[0],
+          id: currentUser.id,
+          email: currentUser.email,
+          full_name: currentUser.user_metadata?.full_name || currentUser.user_metadata?.name || currentUser.email?.split("@")[0],
+          avatar_url: currentUser.user_metadata?.avatar_url || undefined,
         };
 
+        if (!mounted) return;
         setUser(userProfile);
 
-        // Fetch investments from Supabase
-        // Note: This assumes an investments table exists in Supabase
-        // If the table doesn't exist, we'll show an empty state
+        // Fetch investments for logged-in user
         try {
-          const { data: investmentsData, error: investError } = await (supabase as any)
+          const { data: investmentsData, error: investError } = await supabase
             .from("investments")
-            ?.select("*")
-            ?.eq("user_id", userProfile.id)
-            ?.order("created_at", { ascending: false }) || { data: [], error: null };
+            .select("*")
+            .eq("user_id", userProfile.id)
+            .order("created_at", { ascending: false });
 
           if (investError) {
             console.warn("Could not fetch investments:", investError);
             setInvestments([]);
           } else {
-            setInvestments(investmentsData || []);
+            setInvestments((investmentsData as any) || []);
           }
         } catch (err) {
           console.warn("Investments table may not exist:", err);
@@ -118,11 +84,15 @@ export default function MinePage() {
         console.error("Error fetching data:", error);
         router.push("/signin");
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     };
 
     fetchData();
+
+    return () => {
+      mounted = false;
+    };
   }, [supabase, router]);
 
   const handleWithdraw = async (investmentId: string) => {
@@ -154,9 +124,7 @@ export default function MinePage() {
   const handleLogout = async () => {
     setLogoutLoading(true);
     try {
-      if (supabase) {
-        await (supabase.auth as any).signOut?.();
-      }
+      await supabase.auth.signOut();
       router.push("/signin");
     } catch (error) {
       console.error("Logout failed:", error);
@@ -173,8 +141,32 @@ export default function MinePage() {
     }));
   };
 
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close dropdown on outside click or Escape
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (!showDropdown.isOpen) return;
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown((s) => ({ ...s, isOpen: false }));
+      }
+    }
+
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowDropdown((s) => ({ ...s, isOpen: false }));
+    }
+
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("keydown", handleEsc);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("keydown", handleEsc);
+    };
+  }, [showDropdown.isOpen]);
+
   const handleDeposit = () => {
     console.log("Deposit action");
+    // Placeholder modal or route
     router.push("/deposit");
   };
 
@@ -186,10 +178,11 @@ export default function MinePage() {
   // Calculate summary stats
   const totalInvested = investments.reduce((sum, inv) => sum + (inv.amount || 0), 0);
   const activeInvestments = investments.filter((inv) => inv.status === "active").length;
+  const pendingWithdrawals = investments.filter((inv) => inv.status === "pending").length;
 
   // Render loading skeleton
   const InvestmentSkeleton = () => (
-    <div className="animate-pulse bg-gradient-to-r from-slate-700/50 to-slate-800/50 rounded-lg h-32 mb-4"></div>
+    <div className="animate-pulse bg-gradient-to-r from-slate-700/50 to-slate-800/50 rounded-lg h-40 mb-4" />
   );
 
   if (loading) {
@@ -226,57 +219,115 @@ export default function MinePage() {
   return (
     <div className="min-h-screen pb-24" style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)" }}>
       <div className="max-w-6xl mx-auto px-4 py-8 sm:py-12 md:py-16">
-        {/* User Greeting */}
-        <section className="mb-12">
-          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold text-white mb-2">
-            Welcome, {user.full_name || user.email.split("@")[0]}!
-          </h1>
-          <p className="text-gray-400 text-sm sm:text-base">{user.email}</p>
-        </section>
+        {/* User Header */}
+        <section className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-4">
+            {/* Avatar */}
+            <button
+              onClick={toggleDropdown}
+              className="relative w-14 h-14 rounded-full overflow-hidden ring-1 ring-white/10"
+              aria-label="Open profile menu"
+              aria-haspopup="true"
+              aria-expanded={showDropdown.isOpen}
+            >
+              {user.avatar_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+              ) : (
+                // use dicebear avatar as fallback
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={`https://avatars.dicebear.com/api/identicon/${encodeURIComponent(user.email)}.svg`}
+                  alt="avatar"
+                  className="w-full h-full object-cover bg-slate-800"
+                />
+              )}
+              </button>
 
-        {/* Investment Summary Cards */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-12">
-          {/* Total Invested Card */}
-          <div
-            className="rounded-lg p-6 sm:p-8 shadow-lg border border-blue-500/20"
-            style={{ background: "rgba(15, 23, 42, 0.6)" }}
-          >
-            <p className="text-gray-400 text-sm uppercase tracking-wide mb-2">Total Invested</p>
-            <p className="text-3xl sm:text-4xl font-bold text-blue-400">
-              ${totalInvested.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </p>
-            <div className="mt-4 w-full bg-slate-700/30 rounded-full h-2 overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-blue-500 to-cyan-400 h-full rounded-full"
-                style={{ width: "100%" }}
-              ></div>
+              {showDropdown.isOpen && (
+                <div
+                  ref={dropdownRef}
+                  role="menu"
+                  aria-label="Profile menu"
+                  style={{ top: showDropdown.position.top, right: showDropdown.position.right }}
+                  className="fixed z-50 w-48 bg-[#0b1220] rounded-lg shadow-lg ring-1 ring-white/5 overflow-hidden"
+                >
+                  <button
+                    onClick={() => {
+                      setShowDropdown((s) => ({ ...s, isOpen: false }));
+                      handleSettings();
+                    }}
+                    className="w-full text-left px-4 py-3 hover:bg-white/5 text-white"
+                    role="menuitem"
+                  >
+                    Settings
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowDropdown((s) => ({ ...s, isOpen: false }));
+                      handleLogout();
+                    }}
+                    className="w-full text-left px-4 py-3 hover:bg-white/5 text-white"
+                    role="menuitem"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
+
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-white">Welcome, {user.full_name || user.email.split("@")[0]}!</h1>
+              <p className="text-gray-400 text-sm">{user.email}</p>
             </div>
           </div>
 
-          {/* Active Investments Card */}
-          <div
-            className="rounded-lg p-6 sm:p-8 shadow-lg border border-blue-500/20"
-            style={{ background: "rgba(15, 23, 42, 0.6)" }}
-          >
-            <p className="text-gray-400 text-sm uppercase tracking-wide mb-2">Active Investments</p>
-            <p className="text-3xl sm:text-4xl font-bold text-cyan-400">{activeInvestments}</p>
-            <p className="text-gray-400 text-sm mt-4">
-              {investments.length > 0
-                ? `${investments.length} total ${investments.length === 1 ? "investment" : "investments"}`
-                : "No investments yet"}
-            </p>
+          {/* Stats cards and actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex gap-3 overflow-x-auto">
+              <div className="min-w-[160px] rounded-lg p-4 shadow-md border border-sky-500/20 bg-[rgba(15,23,42,0.6)]">
+                <p className="text-gray-400 text-xs uppercase tracking-wide">Total Invested</p>
+                <p className="text-lg font-bold text-sky-400">${totalInvested.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+              </div>
+
+              <div className="min-w-[140px] rounded-lg p-4 shadow-md border border-sky-500/20 bg-[rgba(15,23,42,0.6)]">
+                <p className="text-gray-400 text-xs uppercase tracking-wide">Active</p>
+                <p className="text-lg font-bold text-cyan-300">{activeInvestments}</p>
+              </div>
+
+              <div className="min-w-[140px] rounded-lg p-4 shadow-md border border-sky-500/20 bg-[rgba(15,23,42,0.6)]">
+                <p className="text-gray-400 text-xs uppercase tracking-wide">Pending</p>
+                <p className="text-lg font-bold text-yellow-300">{pendingWithdrawals}</p>
+              </div>
+            </div>
           </div>
         </section>
 
-        {/* New Investment Button */}
-        <section className="mb-12">
-          <Link
-            href="/invest"
-            className="inline-block px-6 sm:px-8 py-3 sm:py-4 text-base sm:text-lg font-semibold text-white rounded-lg shadow-lg transition-all duration-300 hover:shadow-xl hover:scale-105 active:scale-95"
-            style={{ background: "linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%)" }}
-          >
-            + New Investment
-          </Link>
+        {/* Action Buttons */}
+        <section className="mb-6">
+          <div className="flex gap-3 overflow-x-auto pb-2">
+            <Link
+              href="/invest"
+              className="flex-shrink-0 px-4 py-2 rounded-lg bg-gradient-to-r from-sky-500 to-cyan-400 text-white font-semibold shadow-md"
+            >
+              + New Investment
+            </Link>
+
+            <button onClick={handleDeposit} className="flex-shrink-0 px-4 py-2 rounded-lg bg-sky-600 text-white font-semibold shadow-md">
+              Deposit
+            </button>
+
+            <button onClick={() => alert('Open withdraw flow')} className="flex-shrink-0 px-4 py-2 rounded-lg bg-sky-600 text-white font-semibold shadow-md">
+              Withdraw
+            </button>
+
+            <button onClick={handleSettings} className="flex-shrink-0 px-4 py-2 rounded-lg bg-sky-600 text-white font-semibold shadow-md">
+              Settings
+            </button>
+
+            <button onClick={handleLogout} className="flex-shrink-0 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold shadow-md">
+              {logoutLoading ? 'Signing out...' : 'Logout'}
+            </button>
+          </div>
         </section>
 
         {/* Investment List */}
