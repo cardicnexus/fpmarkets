@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient, type SupabaseClient } from "@/lib/supabase/client";
 import Link from "next/link";
+import Image from "next/image";
 
 interface Investment {
   id: string;
@@ -17,6 +18,12 @@ interface UserProfile {
   id: string;
   email: string;
   full_name?: string;
+  avatar_url?: string;
+}
+
+interface DropdownState {
+  isOpen: boolean;
+  position: { top: number; right: number };
 }
 
 export default function MinePage() {
@@ -26,6 +33,11 @@ export default function MinePage() {
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showDropdown, setShowDropdown] = useState<DropdownState>({
+    isOpen: false,
+    position: { top: 0, right: 0 },
+  });
+  const [logoutLoading, setLogoutLoading] = useState(false);
 
   // Initialize Supabase client
   useEffect(() => {
@@ -116,13 +128,8 @@ export default function MinePage() {
   const handleWithdraw = async (investmentId: string) => {
     setActionLoading(investmentId);
     try {
-      // Simulate withdraw action
       await new Promise((resolve) => setTimeout(resolve, 800));
-      
-      // In a real app, you'd make an API call here
       console.log("Withdraw initiated for investment:", investmentId);
-      
-      // Update local state or refetch
       setInvestments((prev) =>
         prev.map((inv) =>
           inv.id === investmentId ? { ...inv, status: "closed" as const } : inv
@@ -136,15 +143,44 @@ export default function MinePage() {
   const handleReinvest = async (investmentId: string) => {
     setActionLoading(investmentId);
     try {
-      // Simulate reinvest action
       await new Promise((resolve) => setTimeout(resolve, 800));
-      
-      // In a real app, you'd make an API call here
       console.log("Reinvestment initiated for investment:", investmentId);
       router.push("/invest");
     } finally {
       setActionLoading(null);
     }
+  };
+
+  const handleLogout = async () => {
+    setLogoutLoading(true);
+    try {
+      if (supabase) {
+        await (supabase.auth as any).signOut?.();
+      }
+      router.push("/signin");
+    } catch (error) {
+      console.error("Logout failed:", error);
+      setLogoutLoading(false);
+    }
+  };
+
+  const toggleDropdown = (e: React.MouseEvent<HTMLButtonElement>) => {
+    const button = e.currentTarget;
+    const rect = button.getBoundingClientRect();
+    setShowDropdown((prev) => ({
+      isOpen: !prev.isOpen,
+      position: { top: rect.bottom + 8, right: window.innerWidth - rect.right },
+    }));
+  };
+
+  const handleDeposit = () => {
+    console.log("Deposit action");
+    router.push("/deposit");
+  };
+
+  const handleSettings = () => {
+    console.log("Settings action");
+    router.push("/profile");
   };
 
   // Calculate summary stats
