@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState, useEffect } from "react";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 type Metric = {
   label: string;
@@ -181,6 +182,37 @@ export default function AdminPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const supabase = createClientComponentClient();
+
+  // users fetched from profiles table
+  const [users, setUsers] = useState<any[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let mounted = true;
+    const load = async () => {
+      setLoadingUsers(true);
+      try {
+        const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
+        if (error) {
+          console.warn("Failed to fetch profiles:", error.message);
+          setUsers([]);
+        } else if (mounted) {
+          setUsers((data as any) || []);
+        }
+      } catch (err) {
+        console.warn("Profiles table may not exist:", err);
+        setUsers([]);
+      } finally {
+        if (mounted) setLoadingUsers(false);
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [isAuthenticated, supabase]);
 
   const welcomeMessage = useMemo(() => {
     if (!isAuthenticated) {
@@ -332,28 +364,96 @@ export default function AdminPage() {
             {activeSection === "accounts" ? (
               <div className="admin__surface" role="table" aria-label="Priority accounts">
                 <header className="admin__surface-header" role="row">
-                  <span role="columnheader">Account</span>
-                  <span role="columnheader">Tier</span>
-                  <span role="columnheader">Equity</span>
-                  <span role="columnheader">KYC</span>
-                  <span role="columnheader">Status</span>
+                  <span role="columnheader">User</span>
+                  <span role="columnheader">Email</span>
+                  <span role="columnheader">Balance</span>
+                  <span role="columnheader">Approved</span>
+                  <span role="columnheader">Actions</span>
                 </header>
-                {accountSnapshots.map((account) => (
-                  <article key={account.name} className="admin__surface-row" role="row">
-                    <span role="cell">{account.name}</span>
-                    <span role="cell">{account.tier}</span>
-                    <span role="cell">{account.balance}</span>
-                    <span role="cell" className={`admin__badge admin__badge--${account.kyc.toLowerCase()}`}>
-                      {account.kyc}
-                    </span>
-                    <span role="cell" className={`admin__badge admin__badge--${account.status.toLowerCase()}`}>
-                      {account.status}
-                    </span>
-                  </article>
-                ))}
+
+                {loadingUsers ? (
+                  <div className="p-4 text-gray-300">Loading users…</div>
+                ) : users.length === 0 ? (
+                  <div className="p-4 text-gray-300">No user profiles found.</div>
+                ) : (
+                  users.map((u) => (
+                    <article key={u.user_id || u.id || u.email} className="admin__surface-row" role="row">
+                      <span role="cell">{u.fullname || u.nickname || u.email}</span>
+                      <span role="cell">{u.email}</span>
+                      <span role="cell">{u.balance ?? "0.00"}</span>
+                      <span role="cell">
+                        <label className="inline-flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={!!u.is_approved}
+                            onChange={async (e) => {
+                              const newVal = e.currentTarget.checked;
+                              try {
+                                await supabase.from("profiles").update({ is_approved: newVal }).eq("user_id", u.user_id);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, is_approved: newVal } : p)));
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                          />
+                        </label>
+                      </span>
+                      <span role="cell">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={async () => {
+                              const add = Number(prompt("Amount to add (PHP):", "0") || "0");
+                              if (Number.isNaN(add)) return;
+                              try {
+                                await supabase.from("profiles").update({ balance: (Number(u.balance || 0) + add).toString() }).eq("user_id", u.user_id);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: (Number(p.balance || 0) + add).toString() } : p)));
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                            className="admin__action"
+                          >
+                            Add
+                          </button>
+
+                          <button
+                            onClick={async () => {
+                              const sub = Number(prompt("Amount to subtract (PHP):", "0") || "0");
+                              if (Number.isNaN(sub)) return;
+                              try {
+                                const newBal = Math.max(0, Number(u.balance || 0) - sub);
+                                await supabase.from("profiles").update({ balance: newBal.toString() }).eq("user_id", u.user_id);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: newBal.toString() } : p)));
+                              } catch (err) {
+                                console.error(err);
+                              }
+                            }}
+                            className="admin__action admin__action--danger"
+                          >
+                            Subtract
+                          </button>
+                          <button
+                            onClick={async () => {
+                              // fetch deposit/withdraw requests for user (if table exists)
+                              try {
+                                const { data: txs } = await supabase.from("transactions").select("*").eq("user_id", u.user_id).order("created_at", { ascending: false }).limit(5);
+                                alert(JSON.stringify(txs || [], null, 2));
+                              } catch (err) {
+                                alert("No transactions table or failed to fetch.");
+                              }
+                            }}
+                            className="admin__action"
+                          >
+                            Tx
+                          </button>
+                        </div>
+                      </span>
+                    </article>
+                  ))
+                )}
+
                 <footer className="admin__surface-footer">
                   <button type="button">Create review task</button>
-                  <button type="button">Trigger statement export</button>
                 </footer>
               </div>
             ) : null}
