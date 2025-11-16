@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSupabaseBrowserClient, type SupabaseClient } from "@/lib/supabase/client";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 type FormMessage = {
   type: "error" | "info";
@@ -11,48 +11,32 @@ type FormMessage = {
 
 export default function SignInForm() {
   const router = useRouter();
-  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
+  const supabase = createClientComponentClient();
   const [initializationError, setInitializationError] = useState<string | null>(null);
   const [formMessage, setFormMessage] = useState<FormMessage | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    let isMounted = true;
-
-    getSupabaseBrowserClient()
-      .then((client) => {
-        if (!isMounted) {
-          return;
-        }
-
-        setSupabase(client);
-      })
-      .catch((error) => {
-        if (!isMounted) {
-          return;
-        }
-
-        const message =
-          error instanceof Error ? error.message : "Authentication configuration is incomplete.";
+    // Verify auth-helpers client available
+    (async () => {
+      try {
+        await supabase.auth.getUser();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Authentication configuration is incomplete.";
         setInitializationError(message);
         setFormMessage({ type: "error", content: message });
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+      }
+    })();
+  }, [supabase]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (!supabase) {
-      const fallbackMessage =
-        initializationError ?? "Authentication is currently unavailable. Please try again later.";
+      const fallbackMessage = initializationError ?? "Authentication is currently unavailable. Please try again later.";
       setFormMessage({ type: "error", content: fallbackMessage });
       return;
     }
-
     const formData = new FormData(event.currentTarget);
     const email = String(formData.get("email") ?? "").trim();
     const password = String(formData.get("password") ?? "").trim();
@@ -73,13 +57,23 @@ export default function SignInForm() {
       return;
     }
 
-    router.push("/mine");
+    // After sign in, ensure session is available then navigate
+    try {
+      const { data } = await supabase.auth.getUser();
+      if ((data as any)?.user) {
+        router.push("/mine");
+      } else {
+        // small delay then navigate
+        setTimeout(() => router.push("/mine"), 300);
+      }
+    } catch (err) {
+      setTimeout(() => router.push("/mine"), 300);
+    }
   };
 
   const handleGoogle = async () => {
     if (!supabase) {
-      const fallbackMessage =
-        initializationError ?? "Authentication is currently unavailable. Please try again later.";
+      const fallbackMessage = initializationError ?? "Authentication is currently unavailable. Please try again later.";
       setFormMessage({ type: "error", content: fallbackMessage });
       return;
     }
