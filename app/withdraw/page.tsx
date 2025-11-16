@@ -15,7 +15,8 @@ export default function WithdrawPage() {
     { value: 'card', label: '💳 Card' },
   ];
 
-  const handleSubmit = (e) => {
+  // ✅ Add event type here
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!terms) {
       alert('Please accept Terms & Conditions');
