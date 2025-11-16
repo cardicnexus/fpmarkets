@@ -184,7 +184,7 @@ export default function AdminPage() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const supabase = createClientComponentClient();
 
-  // users fetched from profiles table
+  // users fetched from profiles table with invested amounts
   const [users, setUsers] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
 
@@ -194,13 +194,32 @@ export default function AdminPage() {
     const load = async () => {
       setLoadingUsers(true);
       try {
-        const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
-        if (error) {
-          console.warn("Failed to fetch profiles:", error.message);
+        const { data: profiles, error: profilesError } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
+        if (profilesError) {
+          console.warn("Failed to fetch profiles:", profilesError.message);
           setUsers([]);
-        } else if (mounted) {
-          setUsers((data as any) || []);
+          return;
         }
+
+        if (!mounted) return;
+
+        // Fetch invested amounts for each user
+        const enriched = await Promise.all(
+          (profiles as any[]).map(async (profile) => {
+            try {
+              const { data: investments, error: invError } = await supabase
+                .from("investments")
+                .select("amount")
+                .eq("user_id", profile.user_id);
+              const totalInvested = !invError && investments ? investments.reduce((sum: number, inv: any) => sum + (inv.amount || 0), 0) : 0;
+              return { ...profile, totalInvested };
+            } catch (err) {
+              console.warn(`Failed to fetch investments for ${profile.user_id}:`, err);
+              return { ...profile, totalInvested: 0 };
+            }
+          })
+        );
+        if (mounted) setUsers(enriched);
       } catch (err) {
         console.warn("Profiles table may not exist:", err);
         setUsers([]);
@@ -366,7 +385,8 @@ export default function AdminPage() {
                 <header className="admin__surface-header" role="row">
                   <span role="columnheader">User</span>
                   <span role="columnheader">Email</span>
-                  <span role="columnheader">Balance</span>
+                  <span role="columnheader">Balance (₱)</span>
+                  <span role="columnheader">Invested (₱)</span>
                   <span role="columnheader">Approved</span>
                   <span role="columnheader">Actions</span>
                 </header>
@@ -380,7 +400,8 @@ export default function AdminPage() {
                     <article key={u.user_id || u.id || u.email} className="admin__surface-row" role="row">
                       <span role="cell">{u.fullname || u.nickname || u.email}</span>
                       <span role="cell">{u.email}</span>
-                      <span role="cell">{u.balance ?? "0.00"}</span>
+                      <span role="cell">₱{Number(u.balance || 0).toFixed(2)}</span>
+                      <span role="cell">₱{Number(u.totalInvested || 0).toFixed(2)}</span>
                       <span role="cell">
                         <label className="inline-flex items-center gap-2">
                           <input
@@ -399,42 +420,67 @@ export default function AdminPage() {
                         </label>
                       </span>
                       <span role="cell">
-                        <div className="flex gap-2">
+                        <div className="flex gap-1 flex-wrap text-xs">
                           <button
                             onClick={async () => {
-                              const add = Number(prompt("Amount to add (PHP):", "0") || "0");
-                              if (Number.isNaN(add)) return;
+                              const add = Number(prompt("Add balance (₱):", "0") || "0");
+                              if (Number.isNaN(add) || add < 0) return;
                               try {
-                                await supabase.from("profiles").update({ balance: (Number(u.balance || 0) + add).toString() }).eq("user_id", u.user_id);
-                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: (Number(p.balance || 0) + add).toString() } : p)));
+                                const newBal = (Number(u.balance || 0) + add).toString();
+                                await supabase.from("profiles").update({ balance: newBal }).eq("user_id", u.user_id);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: newBal } : p)));
                               } catch (err) {
                                 console.error(err);
                               }
                             }}
                             className="admin__action"
                           >
-                            Add
+                            +Balance
                           </button>
 
                           <button
                             onClick={async () => {
-                              const sub = Number(prompt("Amount to subtract (PHP):", "0") || "0");
-                              if (Number.isNaN(sub)) return;
+                              const sub = Number(prompt("Subtract balance (₱):", "0") || "0");
+                              if (Number.isNaN(sub) || sub < 0) return;
                               try {
-                                const newBal = Math.max(0, Number(u.balance || 0) - sub);
-                                await supabase.from("profiles").update({ balance: newBal.toString() }).eq("user_id", u.user_id);
-                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: newBal.toString() } : p)));
+                                const newBal = Math.max(0, Number(u.balance || 0) - sub).toString();
+                                await supabase.from("profiles").update({ balance: newBal }).eq("user_id", u.user_id);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, balance: newBal } : p)));
                               } catch (err) {
                                 console.error(err);
                               }
                             }}
                             className="admin__action admin__action--danger"
                           >
-                            Subtract
+                            -Balance
                           </button>
+
                           <button
                             onClick={async () => {
-                              // fetch deposit/withdraw requests for user (if table exists)
+                              const add = Number(prompt("Add investment (₱):", "0") || "0");
+                              if (Number.isNaN(add) || add < 0) return;
+                              try {
+                                // Create an investment record
+                                await supabase.from("investments").insert([{
+                                  user_id: u.user_id,
+                                  name: "Manual Admin Investment",
+                                  amount: add,
+                                  status: "active",
+                                  created_at: new Date().toISOString(),
+                                }]);
+                                setUsers((prev) => prev.map((p) => (p.user_id === u.user_id ? { ...p, totalInvested: (p.totalInvested || 0) + add } : p)));
+                              } catch (err) {
+                                console.error(err);
+                                alert("Failed to create investment.");
+                              }
+                            }}
+                            className="admin__action"
+                          >
+                            +Invest
+                          </button>
+
+                          <button
+                            onClick={async () => {
                               try {
                                 const { data: txs } = await supabase.from("transactions").select("*").eq("user_id", u.user_id).order("created_at", { ascending: false }).limit(5);
                                 alert(JSON.stringify(txs || [], null, 2));
