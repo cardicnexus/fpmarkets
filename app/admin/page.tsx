@@ -34,8 +34,8 @@ type SupportTicket = {
   updated: string;
 };
 
-const ADMIN_EMAIL = "realcardic1@gmail.com";
-const ADMIN_PASSWORD = "12345678";
+const ADMIN_EMAIL = "ikwanupreye@gmail.com";
+const ADMIN_PASSWORD = "00000000";
 
 const metrics: Metric[] = [
   {
@@ -194,7 +194,12 @@ export default function AdminPage() {
     const load = async () => {
       setLoadingUsers(true);
       try {
-        const { data: profiles, error: profilesError } = await supabase.from("profiles").select("*").order("created_at", { ascending: false });
+        // Fetch all profiles from the profiles table
+        const { data: profiles, error: profilesError } = await supabase
+          .from("profiles")
+          .select("*")
+          .order("created_at", { ascending: false });
+
         if (profilesError) {
           console.warn("Failed to fetch profiles:", profilesError.message);
           setUsers([]);
@@ -219,6 +224,7 @@ export default function AdminPage() {
             }
           })
         );
+
         if (mounted) setUsers(enriched);
       } catch (err) {
         console.warn("Profiles table may not exist:", err);
@@ -228,8 +234,13 @@ export default function AdminPage() {
       }
     };
     load();
+
+    // Refresh users every 5 seconds to catch new signups
+    const interval = setInterval(load, 5000);
+
     return () => {
       mounted = false;
+      clearInterval(interval);
     };
   }, [isAuthenticated, supabase]);
 

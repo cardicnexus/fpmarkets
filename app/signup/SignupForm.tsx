@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getSupabaseBrowserClient, type SupabaseClient } from "@/lib/supabase/client";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
 type FormMessage = {
   type: "error" | "info";
@@ -11,7 +11,7 @@ type FormMessage = {
 
 export default function SignupForm() {
   const router = useRouter();
-  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
+  const supabase = createClientComponentClient();
   const [initializationError, setInitializationError] = useState<string | null>(null);
   const [formMessage, setFormMessage] = useState<FormMessage | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -19,29 +19,22 @@ export default function SignupForm() {
   useEffect(() => {
     let isMounted = true;
 
-    getSupabaseBrowserClient()
-      .then((client) => {
-        if (!isMounted) {
-          return;
-        }
-
-        setSupabase(client);
-      })
-      .catch((error) => {
-        if (!isMounted) {
-          return;
-        }
-
+    (async () => {
+      try {
+        await supabase.auth.getUser();
+      } catch (error) {
+        if (!isMounted) return;
         const message =
           error instanceof Error ? error.message : "Authentication configuration is incomplete.";
         setInitializationError(message);
         setFormMessage({ type: "error", content: message });
-      });
+      }
+    })();
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [supabase]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -79,6 +72,22 @@ export default function SignupForm() {
       setFormMessage({ type: "error", content: error.message });
       setIsSubmitting(false);
       return;
+    }
+
+    // Create profile record in Supabase
+    if (data?.user?.id) {
+      try {
+        await supabase.from("profiles").insert([{
+          user_id: data.user.id,
+          email: email,
+          balance: "0",
+          is_approved: false,
+          created_at: new Date().toISOString(),
+        }]);
+      } catch (err) {
+        console.warn("Failed to create profile record:", err);
+        // Continue anyway, user can complete profile later
+      }
     }
 
     if (data?.session) {
