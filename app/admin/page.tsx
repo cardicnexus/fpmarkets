@@ -187,26 +187,38 @@ export default function AdminPage() {
   // users fetched from profiles table with invested amounts
   const [users, setUsers] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [debugMessage, setDebugMessage] = useState<string>("");
 
   useEffect(() => {
     if (!isAuthenticated) return;
     let mounted = true;
     const load = async () => {
       setLoadingUsers(true);
+      setDebugMessage("Loading profiles...");
       try {
-        // Fetch all profiles from the profiles table
+        // Try to fetch all profiles
         const { data: profiles, error: profilesError } = await supabase
           .from("profiles")
           .select("*")
           .order("created_at", { ascending: false });
 
         if (profilesError) {
-          console.warn("Failed to fetch profiles:", profilesError.message);
+          console.warn("Failed to fetch profiles:", profilesError);
+          setDebugMessage(`Error: ${profilesError.message}`);
           setUsers([]);
           return;
         }
 
+        console.log("Fetched profiles:", profiles);
+        setDebugMessage(`Found ${profiles?.length || 0} profiles`);
+
         if (!mounted) return;
+
+        if (!profiles || profiles.length === 0) {
+          setUsers([]);
+          setLoadingUsers(false);
+          return;
+        }
 
         // Fetch invested amounts for each user
         const enriched = await Promise.all(
@@ -225,9 +237,13 @@ export default function AdminPage() {
           })
         );
 
-        if (mounted) setUsers(enriched);
+        if (mounted) {
+          setUsers(enriched);
+          setDebugMessage(`Loaded ${enriched.length} profiles`);
+        }
       } catch (err) {
-        console.warn("Profiles table may not exist:", err);
+        console.warn("Profiles table error:", err);
+        setDebugMessage(`Table error: ${err instanceof Error ? err.message : String(err)}`);
         setUsers([]);
       } finally {
         if (mounted) setLoadingUsers(false);
@@ -235,8 +251,8 @@ export default function AdminPage() {
     };
     load();
 
-    // Refresh users every 5 seconds to catch new signups
-    const interval = setInterval(load, 5000);
+    // Refresh users every 3 seconds to catch new signups
+    const interval = setInterval(load, 3000);
 
     return () => {
       mounted = false;
@@ -393,6 +409,16 @@ export default function AdminPage() {
 
             {activeSection === "accounts" ? (
               <div className="admin__surface" role="table" aria-label="Priority accounts">
+                {debugMessage && (
+                  <div className="p-4 mb-4 text-sm text-blue-300 bg-blue-900/20 rounded-lg border border-blue-500/30">
+                    Debug: {debugMessage}
+                  </div>
+                )}
+                {!loadingUsers && users.length === 0 && !debugMessage && (
+                  <div className="p-4 mb-4 text-sm text-yellow-300 bg-yellow-900/20 rounded-lg border border-yellow-500/30">
+                    No user profiles found. If this persists, check that the <code className="bg-black/50 px-2 py-1 rounded">profiles</code> table exists in Supabase. See DATABASE-SETUP.md for instructions.
+                  </div>
+                )}
                 <header className="admin__surface-header" role="row">
                   <span role="columnheader">User</span>
                   <span role="columnheader">Email</span>
